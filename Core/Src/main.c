@@ -42,6 +42,8 @@
 #define MPU6050_GYRO_CONFIG   0x1B
 #define GYRO_SENSITIVITY      131.0
 #define alpha 0.95
+#define SPACE_WIDTH 101
+#define PROGRESS 50
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,6 +58,17 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 uint8_t MSG[50] = {'\0'};
+
+char* winMessage ="\t\t.#.....................#.....###########.....#...........#\r\n"
+				  "\t\t..#.........#.........#...........#..........#.#.........#\r\n"
+				  "\t\t...#.......#.#.......#............#..........#...#.......#\r\n"
+				  "\t\t....#.....#...#.....#.............#..........#.....#.....#\r\n"
+				  "\t\t.....#...#.....#...#..............#..........#.......#...#\r\n"
+				  "\t\t......#.#.......#.#...............#..........#.........#.#\r\n"
+				  "\t\t.......#.........#...........###########.....#...........#\r\n";
+int progress = 0;
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,13 +83,14 @@ void UART_SEND_TXT(UART_HandleTypeDef *huart, char buffer[]);
 void UART_SEND_INT(UART_HandleTypeDef *huart, int i);
 void UART_SEND_CHR(UART_HandleTypeDef *huart, char c);
 void UART_SEND_NL(UART_HandleTypeDef *huart);
+int scale_roll(double value);
+int scale_pitch(double value);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 float gx_dps, gy_dps, gz_dps, gyro_x, gyro_y, gyro_z;
 float angleX = 0, angleY = 0, angleZ = 0;
-uint32_t prevTime = 0, currTime = 0;
 /* USER CODE END 0 */
 
 /**
@@ -86,6 +100,13 @@ uint32_t prevTime = 0, currTime = 0;
 int main(void)
 {
 	/* USER CODE BEGIN 1 */
+	char space_line[SPACE_WIDTH];
+	for (int i = 0; i < SPACE_WIDTH; i++)
+	{
+		space_line[i] = '.';
+	}
+	int x_pos = SPACE_WIDTH/2+1;
+	int x_prev_pos = 0;
 
 	/* USER CODE END 1 */
 
@@ -129,7 +150,6 @@ int main(void)
 	/* USER CODE BEGIN WHILE */
 	while (1)
 	{
-		/* If we are measuring accelerometer */
 		uint8_t buf[6];
 		int16_t ax, ay, az;
 		float ax_g, ay_g, az_g;
@@ -146,13 +166,6 @@ int main(void)
 
 		float acc_roll = atan2(ay_g, az_g) * 180.0 /M_PI; // Roll angle from accelerometer
 		float acc_pitch = atan2(ax_g, sqrt(ay_g*ay_g+az_g*az_g))*180.0/M_PI; // Pitch from acceleration
-
-//		sprintf(MSG, "Accel X: %d, Y: %d, Z: %d\r\n",  ax, ay, az);
-//		sprintf(MSG, "Roll: %f	Pitch:%f\r\n",  acc_roll, acc_pitch);
-//		HAL_UART_Transmit(&huart2, MSG, sizeof(MSG), 100);
-//
-//		HAL_Delay(1000);
-
 
 		/* If we are measuring gyroscope */
 		uint8_t buf_GYRO[6];
@@ -175,17 +188,55 @@ int main(void)
 		gyro_z = gy_dps*dt;
 
 
-		float roll_angle = alpha*gyro_x + (1-alpha)*acc_roll;
-		float pitch_angle = alpha*gyro_y + (1-alpha)*acc_pitch;
+		float roll_angle = -1*(alpha*gyro_x + (1-alpha)*acc_roll);
+		float pitch_angle = -1*(alpha*gyro_y + (1-alpha)*acc_pitch);
 
 
-//		sprintf(MSG, "DPS X: %f, Y: %f, Z: %f\r\n", gx, gy, gz);
-		sprintf(MSG, "Roll_angle: %f		Pitch: %f\r\n", roll_angle, pitch_angle);
-		HAL_UART_Transmit(&huart2, MSG, sizeof(MSG), 100);
 
-		HAL_Delay(10);
+//		sprintf(MSG, "\r\x1b[1LRoll_angle: %d		Pitch: %d\r", scale_roll(roll_angle), scale_pitch(pitch_angle));
+//		HAL_UART_Transmit(&huart2, MSG, sizeof(MSG), 100);
+//		HAL_Delay(100);
+
+		x_prev_pos = x_pos;
+		int frequency = scale_pitch(pitch_angle);
+
+		if(roll_angle < -0.1)
+		{
+			x_pos--;
+		}
+
+		else if(roll_angle > 0.1)
+		{
+			x_pos++;
+		}
+
+		else
+			x_pos = x_prev_pos;
 
 
+		if (x_pos == 0 || x_pos == SPACE_WIDTH - 1)
+		{
+			sprintf(MSG, "\t\t\t\tCRASH!!!\r\n");
+			HAL_UART_Transmit(&huart2, MSG, sizeof(MSG), 100);
+			break;
+		}
+		else
+		{
+			progress++;
+			space_line[x_pos] = 'X';
+			if (x_pos != x_prev_pos)
+				space_line[x_prev_pos] = '.';
+			HAL_UART_Transmit(&huart2, space_line, sizeof(space_line), 100);
+			sprintf(MSG, "\t\t\t\tFrequency = %d", frequency);
+			HAL_UART_Transmit(&huart2, MSG, sizeof(MSG), 100);
+			UART_SEND_NL(&huart2);
+			HAL_Delay(frequency);
+			if(progress == PROGRESS)
+			{
+				HAL_UART_Transmit(&huart2, (uint8_t*)winMessage , strlen(winMessage), 100);
+				break;
+			}
+		}
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
@@ -355,6 +406,28 @@ void MPU6050_Init(void)
 	buffer[0] = MPU6050_GYRO_CONFIG;
 	buffer[1] = 0x18;
 	HAL_I2C_Master_Transmit(&hi2c1, MPU6050_ADDRESS << 1, buffer, 2, HAL_MAX_DELAY);
+}
+
+
+int scale_roll(double value)
+{
+	double range = 6.2; // the range of values we're scaling
+	double offset = -3.1; // the minimum value of the range we're scaling
+	double scale = 100.0 / range; // the scaling factor to convert the range to 0-100
+
+	return (int)(value - offset) * scale; // apply the scaling factor and return the scaled value
+}
+
+int scale_pitch(double value)
+{
+	double range = 8.0; // the range of values we're scaling
+	double offset = -4.0; // the minimum value of the range we're scaling
+	double outputRange = 167.0; // the range of the output values (250-83)
+	double outputOffset = 83.0; // the minimum value of the output range
+
+	double scale = outputRange / range; // the scaling factor to convert the range to 250-83
+
+	return (int)(value - offset) * scale + outputOffset; // apply the scaling factor and output offset, and return the scaled value
 }
 
 //00001000
