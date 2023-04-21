@@ -24,6 +24,7 @@
 #include "string.h"
 #include "stdlib.h"
 #include "stdio.h"
+#include "math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,6 +41,7 @@
 #define MPU6050_ACCEL_CONFIG  0x1C
 #define MPU6050_GYRO_CONFIG   0x1B
 #define GYRO_SENSITIVITY      131.0
+#define alpha 0.95
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,7 +74,7 @@ void UART_SEND_NL(UART_HandleTypeDef *huart);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-float gx, gy, gz;
+float gx_dps, gy_dps, gz_dps, gyro_x, gyro_y, gyro_z;
 float angleX = 0, angleY = 0, angleZ = 0;
 uint32_t prevTime = 0, currTime = 0;
 /* USER CODE END 0 */
@@ -108,6 +110,18 @@ int main(void)
 	MX_USART2_UART_Init();
 	MX_I2C1_Init();
 	/* USER CODE BEGIN 2 */
+	MPU6050_Init();
+
+	if(HAL_I2C_IsDeviceReady(&hi2c1, MPU6050_ADDRESS <<1, 1, HAL_MAX_DELAY))
+	{
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, 1);
+	}
+	else
+	{
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, 0);
+	}
+
+	float gyro_roll;
 
 	/* USER CODE END 2 */
 
@@ -116,47 +130,59 @@ int main(void)
 	while (1)
 	{
 		/* If we are measuring accelerometer */
-//		uint8_t buf[6];
-//		int16_t ax, ay, az;
-//
-//		HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDRESS, MPU6050_ACCEL_XOUT_H, I2C_MEMADD_SIZE_8BIT, buf, 6, HAL_MAX_DELAY);
-//
-//		ax = (buf[0] << 8) | buf[1];
-//		ay = (buf[2] << 8) | buf[3];
-//		az = (buf[4] << 8) | buf[5];
-//
-//		printf("Accel X: %d, Y: %d, Z: %d\n", ax, ay, az);
-//		sprintf(MSG, "Accel X: %d, Y: %d, Z: %d\n",  ax, ay, az);
+		uint8_t buf[6];
+		int16_t ax, ay, az;
+		float ax_g, ay_g, az_g;
+
+		HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDRESS << 1, MPU6050_ACCEL_XOUT_H, I2C_MEMADD_SIZE_8BIT, buf, 6, HAL_MAX_DELAY);
+
+		ax = (buf[0] << 8) | buf[1];
+		ay = (buf[2] << 8) | buf[3];
+		az = (buf[4] << 8) | buf[5];
+
+		ax_g = (float) ax/8192.0;
+		ay_g = (float) ay/8192.0;
+		az_g = (float) az/8192.0;
+
+		float acc_roll = atan2(ay_g, az_g) * 180.0 /M_PI; // Roll angle from accelerometer
+		float acc_pitch = atan2(ax_g, sqrt(ay_g*ay_g+az_g*az_g))*180.0/M_PI; // Pitch from acceleration
+
+//		sprintf(MSG, "Accel X: %d, Y: %d, Z: %d\r\n",  ax, ay, az);
+//		sprintf(MSG, "Roll: %f	Pitch:%f\r\n",  acc_roll, acc_pitch);
 //		HAL_UART_Transmit(&huart2, MSG, sizeof(MSG), 100);
 //
 //		HAL_Delay(1000);
 
 
 		/* If we are measuring gyroscope */
-		uint8_t buf[6];
+		uint8_t buf_GYRO[6];
 		int16_t gx_raw, gy_raw, gz_raw;
 
-		HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDRESS, MPU6050_GYRO_XOUT_H, I2C_MEMADD_SIZE_8BIT, buf, 6, HAL_MAX_DELAY);
+		HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDRESS << 1, MPU6050_GYRO_XOUT_H, I2C_MEMADD_SIZE_8BIT, buf_GYRO, 6, HAL_MAX_DELAY);
 
-		gx_raw = (buf[0] << 8) | buf[1];
-		gy_raw = (buf[2] << 8) | buf[3];
-		gz_raw = (buf[4] << 8) | buf[5];
+		gx_raw = (buf_GYRO[0] << 8) | buf_GYRO[1];
+		gy_raw = (buf_GYRO[2] << 8) | buf_GYRO[3];
+		gz_raw = (buf_GYRO[4] << 8) | buf_GYRO[5];
 
-		gx = gx_raw / GYRO_SENSITIVITY;
-		gy = gy_raw / GYRO_SENSITIVITY;
-		gz = gz_raw / GYRO_SENSITIVITY;
+		gx_dps = (float) gx_raw / GYRO_SENSITIVITY;
+		gy_dps = (float) gy_raw / GYRO_SENSITIVITY;
+		gz_dps = (float) gz_raw / GYRO_SENSITIVITY;
 
-		currTime = HAL_GetTick();
-		float elapsedTime = (currTime - prevTime) / 1000.0;
+		float dt = 0.01;
 
-		angleX += gx * elapsedTime;
-		angleY += gy * elapsedTime;
-		angleZ += gz * elapsedTime;
+		gyro_x = gx_dps*dt;
+		gyro_y = gy_dps*dt;
+		gyro_z = gy_dps*dt;
 
-		sprintf(MSG, "Angle X: %f, Y: %f, Z: %f\n", angleX, angleY, angleZ);
+
+		float roll_angle = alpha*gyro_x + (1-alpha)*acc_roll;
+		float pitch_angle = alpha*gyro_y + (1-alpha)*acc_pitch;
+
+
+//		sprintf(MSG, "DPS X: %f, Y: %f, Z: %f\r\n", gx, gy, gz);
+		sprintf(MSG, "Roll_angle: %f		Pitch: %f\r\n", roll_angle, pitch_angle);
 		HAL_UART_Transmit(&huart2, MSG, sizeof(MSG), 100);
 
-		prevTime = currTime;
 		HAL_Delay(10);
 
 
@@ -229,7 +255,7 @@ static void MX_I2C1_Init(void)
 
 	/* USER CODE END I2C1_Init 1 */
 	hi2c1.Instance = I2C1;
-	hi2c1.Init.ClockSpeed = 100000;
+	hi2c1.Init.ClockSpeed = 400000;
 	hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
 	hi2c1.Init.OwnAddress1 = 0;
 	hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -320,18 +346,18 @@ void MPU6050_Init(void)
 
 	buffer[0] = MPU6050_PWR_MGMT_1;
 	buffer[1] = 0x00;
-	HAL_I2C_Master_Transmit(&hi2c1, MPU6050_ADDRESS, buffer, 2, HAL_MAX_DELAY);
+	HAL_I2C_Master_Transmit(&hi2c1, MPU6050_ADDRESS << 1, buffer, 2, HAL_MAX_DELAY);
 
 	buffer[0] = MPU6050_ACCEL_CONFIG;
 	buffer[1] = 0x08;
-	HAL_I2C_Master_Transmit(&hi2c1, MPU6050_ADDRESS, buffer, 2, HAL_MAX_DELAY);
+	HAL_I2C_Master_Transmit(&hi2c1, MPU6050_ADDRESS << 1, buffer, 2, HAL_MAX_DELAY);
 
 	buffer[0] = MPU6050_GYRO_CONFIG;
 	buffer[1] = 0x18;
-	HAL_I2C_Master_Transmit(&hi2c1, MPU6050_ADDRESS, buffer, 2, HAL_MAX_DELAY);
+	HAL_I2C_Master_Transmit(&hi2c1, MPU6050_ADDRESS << 1, buffer, 2, HAL_MAX_DELAY);
 }
 
-//
+//00001000
 // This function displays a new-line
 //
 void UART_SEND_NL(UART_HandleTypeDef *huart)
